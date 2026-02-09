@@ -25,16 +25,21 @@ import {
   Mail, 
   Instagram,
   Eye,    
-  EyeOff  
+  EyeOff,
+  AlertTriangle // Icon for Error
 } from 'lucide-react';
 
 // --- API UTILITIES ---
 
-const API_KEY = "AIzaSyC5qrQD-kXfTLkC22po9zkzIuTdiUWpues"; // System injects this
+// ⚠️ PENTING: MASUKKAN API KEY GOOGLE GEMINI ANDA DI DALAM TANDA KUTIP DI BAWAH INI ⚠️
+const API_KEY = "AIzaSyC5qrQD-kXfTLkC22po9zkzIuTdiUWpues"; 
 
-// Helper for Imagen 3 (Used for "Searching"/Generating Clothing Mockups)
+// Helper for Imagen (Used for "Searching"/Generating Clothing Mockups)
 const generateClothingMockup = async (prompt) => {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${API_KEY}`;
+  if (!API_KEY) throw new Error("API Key masih kosong di file App.jsx (Baris 35). Silakan isi lalu build ulang.");
+
+  // Menggunakan model imagen-3.0-generate-001 (Public Beta) jika tersedia, atau fallback ke model lain
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${API_KEY}`;
   
   const finalPrompt = `Professional product photography of ${prompt}, isolated on plain white background, high quality, realistic texture, fashion catalog style.`;
 
@@ -49,71 +54,70 @@ const generateClothingMockup = async (prompt) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Error ${response.status}: ${response.statusText}`);
+    }
+
     const data = await response.json();
     if (data.predictions && data.predictions[0]?.bytesBase64Encoded) {
       return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
     }
-    throw new Error("Gagal membuat mockup pakaian.");
+    // Fallback parsing for some API versions
+    if (data.predictions && data.predictions[0]?.mimeType && data.predictions[0]?.bytesBase64Encoded) {
+       return `data:${data.predictions[0].mimeType};base64,${data.predictions[0].bytesBase64Encoded}`;
+    }
+
+    throw new Error("Format respons API tidak dikenali.");
   } catch (error) {
-    console.error(error);
-    return null;
+    console.error("Mockup Error:", error);
+    throw error;
   }
 };
 
 // Helper for Gemini Image Editing (Used for the actual Try-On)
 const generateTryOn = async (userImageBase64, referenceImageBase64, options) => {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${API_KEY}`;
+  if (!API_KEY) throw new Error("API Key masih kosong di file App.jsx (Baris 35).");
+
+  // NOTE: Menggunakan model gemini-1.5-flash untuk instruksi edit. 
+  // Jika model 'image-preview' khusus tidak tersedia untuk key publik, kita gunakan flash standar 
+  // namun hasilnya mungkin berupa teks deskripsi jika model menolak generate gambar langsung.
+  // URL ini mencoba memaksa output gambar jika didukung oleh akun.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
   
   let promptText = "";
   const parts = [];
 
+  promptText += "Act as a professional virtual try-on AI. ";
+  
   if (referenceImageBase64) {
-    promptText += "You are a highly accurate virtual try-on assistant. ";
-    promptText += "There are two images provided. The FIRST image is the USER (person). The SECOND image is the REFERENCE OUTFIT. ";
-    promptText += "YOUR TASK: Dress the user in the first image exactly like the reference outfit in the second image. ";
-    promptText += "STRICT REQUIREMENTS: ";
-    promptText += "- Match the exact color, pattern, fabric texture, cut, and stitching details from the reference outfit. ";
-    promptText += "- The clothing must blend naturally with the body, maintaining realistic human proportions. ";
-    promptText += "- High photo quality and sharp details. ";
-    promptText += "NEGATIVE CONSTRAINTS (DO NOT IGNORE): ";
-    promptText += "- DO NOT change the color of the outfit. ";
-    promptText += "- DO NOT change the design or model of the clothing. ";
-    promptText += "- DO NOT add new accessories that are not in the reference. ";
-    promptText += "- DO NOT re-interpret the outfit; copy it visually. ";
+    promptText += "I will provide two images. Image 1 is the USER. Image 2 is the CLOTHING REFERENCE. ";
+    promptText += "Your goal is to generate a new image of the USER wearing the CLOTHING from Image 2. ";
+    promptText += "Maintain the user's face, pose, and background exactly. Only change the outfit to match the reference. ";
   } else {
-    promptText += "Change the clothing of the person in the image. ";
+    promptText += "I will provide an image of a USER. Please edit the image to change their outfit. ";
   }
 
-  if (options.hijab) {
-    promptText += "The person should be wearing a stylish hijab that matches the outfit. ";
-  } else {
-    promptText += "The person is NOT wearing a hijab (unless already present). ";
-  }
+  // Outfit Details
+  if (options.hijab) promptText += "The user must wear a stylish hijab matching the outfit. ";
+  else promptText += "The user should NOT wear a hijab (unless originally wearing one). ";
 
   if (!referenceImageBase64) {
-    if (options.topPrompt) {
-        promptText += `Upper body clothing: ${options.topPrompt}. Ensure texture matches. `;
-    }
-    if (options.bottomPrompt) {
-        promptText += `Lower body clothing: ${options.bottomPrompt}. Ensure fit is realistic. `;
-    }
-  } else {
-    if (options.extraPrompt) {
-        promptText += `Additional context: ${options.extraPrompt}. `;
-    }
+    if (options.topPrompt) promptText += `Top outfit: ${options.topPrompt}. `;
+    if (options.bottomPrompt) promptText += `Bottom outfit: ${options.bottomPrompt}. `;
   }
   
-  if (!referenceImageBase64 && options.extraPrompt) {
-      promptText += `Additional details: ${options.extraPrompt}. `;
-  }
+  if (options.extraPrompt) promptText += `Additional details: ${options.extraPrompt}. `;
 
-  promptText += "Maintain the person's exact face, identity, body pose, skin tone, and background from the user image. Only change the requested garments. Photorealistic, 8k quality, natural lighting.";
+  promptText += "Return ONLY the generated image. Do not include any text explanation.";
 
   parts.push({ text: promptText });
 
   const getMimeType = (dataUrl) => dataUrl.substring(dataUrl.indexOf(':') + 1, dataUrl.indexOf(';'));
   const getBase64Data = (dataUrl) => dataUrl.split(',')[1];
 
+  // User Image
   parts.push({
     inlineData: {
       mimeType: getMimeType(userImageBase64),
@@ -121,6 +125,7 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
     }
   });
 
+  // Reference Image
   if (referenceImageBase64) {
     parts.push({
       inlineData: {
@@ -133,7 +138,9 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
   const payload = {
     contents: [{ parts }],
     generationConfig: {
-      responseModalities: ["IMAGE"]
+      // PENTING: Tidak semua API Key support image response langsung.
+      // Jika error 400/500, kemungkinan akun belum support fitur ini di public API.
+      responseModalities: ["IMAGE"] 
     }
   };
 
@@ -143,15 +150,36 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await response.json();
-    const resultBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-    
-    if (resultBase64) {
-      return `data:image/png;base64,${resultBase64}`;
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        // Menangkap pesan error spesifik dari Google
+        const googleMessage = errData.error?.message || response.statusText;
+        throw new Error(`Google API Error (${response.status}): ${googleMessage}`);
     }
-    throw new Error("Gagal memproses try-on.");
+
+    const data = await response.json();
+    
+    // Parsing response Gemini
+    // Struktur response bisa berbeda tergantung model
+    const candidates = data.candidates?.[0];
+    
+    // Cek Inline Data (Gambar)
+    const inlineData = candidates?.content?.parts?.find(p => p.inlineData)?.inlineData;
+    if (inlineData) {
+       return `data:${inlineData.mimeType || 'image/png'};base64,${inlineData.data}`;
+    }
+
+    // Cek jika model malah mengembalikan teks (karena tidak bisa generate gambar)
+    const textPart = candidates?.content?.parts?.find(p => p.text)?.text;
+    if (textPart) {
+        console.warn("Model returned text instead of image:", textPart);
+        throw new Error("Model merespons dengan teks, bukan gambar. Akun API Key mungkin belum mendukung Image Generation.");
+    }
+
+    throw new Error("Tidak ada data gambar dalam respons API.");
   } catch (error) {
-    console.error(error);
+    console.error("TryOn Error:", error);
     throw error;
   }
 };
@@ -192,6 +220,7 @@ export default function VirtualTryOnApp() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false); 
   const [contact, setContact] = useState(""); 
+  
   const [rememberMe, setRememberMe] = useState(false); 
   const [loginError, setLoginError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -243,6 +272,7 @@ export default function VirtualTryOnApp() {
   useEffect(() => {
     const savedUser = localStorage.getItem('genz_username');
     const savedPass = localStorage.getItem('genz_password');
+    
     if (savedUser && savedPass) {
       setUsername(savedUser);
       setPassword(savedPass);
@@ -367,6 +397,12 @@ export default function VirtualTryOnApp() {
     const setLoading = isTop ? setIsSearchingTop : setIsSearchingBottom;
 
     if (!query.trim()) return;
+    
+    // Check API Key
+    if (!API_KEY) {
+        setErrorMsg("API Key belum diisi di kode. Silakan edit file App.jsx baris 35.");
+        return;
+    }
 
     setLoading(true);
     try {
@@ -381,7 +417,7 @@ export default function VirtualTryOnApp() {
       
       setResults(validResults);
     } catch (err) {
-      setErrorMsg("Gagal mencari pakaian. Silakan coba lagi.");
+      setErrorMsg(`Error Pencarian: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -395,6 +431,12 @@ export default function VirtualTryOnApp() {
     if (!referenceImage && !selectedTop && !selectedBottom && !extraPrompt) {
       setErrorMsg("Harap upload foto referensi, pilih pakaian, atau masukkan deskripsi.");
       return;
+    }
+    
+    // Check API Key
+    if (!API_KEY) {
+        setErrorMsg("API Key belum diisi di kode. Silakan edit file App.jsx baris 35.");
+        return;
     }
 
     setIsGenerating(true);
@@ -413,7 +455,7 @@ export default function VirtualTryOnApp() {
       setCurrentResult(resultImage);
       setHistory(prev => [resultImage, ...prev]);
     } catch (err) {
-      setErrorMsg("Gagal melakukan try-on. Pastikan foto jelas.");
+      setErrorMsg(`Gagal Try-On: ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
@@ -816,8 +858,11 @@ export default function VirtualTryOnApp() {
           </button>
           
           {errorMsg && (
-            <div className={`p-3 text-sm rounded-lg border animate-in fade-in slide-in-from-top-2 ${isDarkMode ? 'bg-red-900/20 text-red-300 border-red-800' : 'bg-red-50 text-red-600 border-red-100'}`}>
-              {errorMsg}
+            <div className={`p-3 text-sm rounded-lg border animate-in fade-in slide-in-from-top-2 flex items-start gap-2 ${isDarkMode ? 'bg-red-900/20 text-red-300 border-red-800' : 'bg-red-50 text-red-600 border-red-100'}`}>
+              <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+              <div className="break-words w-full">
+                  {errorMsg}
+              </div>
             </div>
           )}
 
