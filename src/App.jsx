@@ -919,5 +919,4 @@ export default function VirtualTryOnApp() {
 
     </div>
   );
-
 }
