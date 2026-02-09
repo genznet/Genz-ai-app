@@ -23,22 +23,26 @@ import {
   ArrowRight,
   UserPlus, 
   Mail, 
-  Instagram // Added Instagram icon
+  Instagram,
+  Eye,    
+  EyeOff,
+  AlertTriangle,
+  Sparkles
 } from 'lucide-react';
 
 // --- API UTILITIES ---
 
-const API_KEY = "AIzaSyDm5b64FCUwiJEzcS3w88v6ibVhbQMDMIw"; // System injects this
+// ⚠️ PENTING: API KEY INI HARUS VALID ⚠️
+const API_KEY = AIzaSyDm5b64FCUwiJEzcS3w88v6ibVhbQMDMIw; 
 
-// Helper for Imagen 3 (Used for "Searching"/Generating Clothing Mockups)
+// Helper for Imagen (Search Clothing) - Menggunakan Imagen 4.0
 const generateClothingMockup = async (prompt) => {
+  if (!API_KEY) throw new Error("API Key belum diisi di kode.");
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${API_KEY}`;
   
-  // We emphasize "isolated product shot" to make it look like a shopping item
-  const finalPrompt = `Professional product photography of ${prompt}, isolated on plain white background, high quality, realistic texture, fashion catalog style.`;
-
   const payload = {
-    instances: [{ prompt: finalPrompt }],
+    instances: [{ prompt: `Professional product photography of ${prompt}, isolated on plain white background, high quality.` }],
     parameters: { sampleCount: 1 }
   };
 
@@ -48,103 +52,70 @@ const generateClothingMockup = async (prompt) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Gagal mengambil gambar (Status: ${response.status})`);
+    }
+
     const data = await response.json();
-    if (data.predictions && data.predictions[0]?.bytesBase64Encoded) {
+    // Parsing respons Imagen 4.0
+    if (data.predictions?.[0]?.bytesBase64Encoded) {
       return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
     }
-    throw new Error("Gagal membuat mockup pakaian.");
+    throw new Error("Format respon API tidak valid.");
   } catch (error) {
-    console.error(error);
-    return null;
+    console.error("Search Error:", error);
+    throw error;
   }
 };
 
-// Helper for Gemini Image Editing (Used for the actual Try-On)
+// Helper for Try-On (Process) - Menggunakan Gemini 2.5 Flash Image Preview
 const generateTryOn = async (userImageBase64, referenceImageBase64, options) => {
+  if (!API_KEY) throw new Error("API Key belum diisi di file App.jsx.");
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${API_KEY}`;
   
-  let promptText = "";
-  const parts = [];
-
-  // 1. Build the Prompt based on inputs
-  if (referenceImageBase64) {
-    // Mode: Reference Image Transfer
-    promptText += "You are a highly accurate virtual try-on assistant. ";
-    promptText += "There are two images provided. The FIRST image is the USER (person). The SECOND image is the REFERENCE OUTFIT. ";
-    promptText += "YOUR TASK: Dress the user in the first image exactly like the reference outfit in the second image. ";
-    
-    // Strict Guidelines from user
-    promptText += "STRICT REQUIREMENTS: ";
-    promptText += "- Match the exact color, pattern, fabric texture, cut, and stitching details from the reference outfit. ";
-    promptText += "- The clothing must blend naturally with the body, maintaining realistic human proportions. ";
-    promptText += "- High photo quality and sharp details. ";
-    
-    // Negative Constraints
-    promptText += "NEGATIVE CONSTRAINTS (DO NOT IGNORE): ";
-    promptText += "- DO NOT change the color of the outfit. ";
-    promptText += "- DO NOT change the design or model of the clothing. ";
-    promptText += "- DO NOT add new accessories that are not in the reference. ";
-    promptText += "- DO NOT re-interpret the outfit; copy it visually. ";
-  } else {
-    // Mode: Text/Selection Description Only
-    promptText += "Change the clothing of the person in the image. ";
-  }
-
-  // Common instructions
-  if (options.hijab) {
-    promptText += "The person should be wearing a stylish hijab that matches the outfit. ";
-  } else {
-    promptText += "The person is NOT wearing a hijab (unless already present). ";
-  }
-
-  if (!referenceImageBase64) {
-    if (options.topPrompt) {
-        promptText += `Upper body clothing: ${options.topPrompt}. Ensure texture matches. `;
-    }
-    if (options.bottomPrompt) {
-        promptText += `Lower body clothing: ${options.bottomPrompt}. Ensure fit is realistic. `;
-    }
-  } else {
-    if (options.extraPrompt) {
-        promptText += `Additional context: ${options.extraPrompt}. `;
-    }
-  }
+  let promptText = "Change the clothing of the person in the image. ";
   
-  if (!referenceImageBase64 && options.extraPrompt) {
-      promptText += `Additional details: ${options.extraPrompt}. `;
+  if (referenceImageBase64) {
+    promptText += "I have provided an image of a person (Image 1) and an image of clothing (Image 2). ";
+    promptText += "Generate a new image of the person wearing the clothing from Image 2. ";
+    promptText += "Maintain the person's pose, face, and background exactly. ";
+  } else {
+    promptText += "I have provided an image of a person. Edit the image to change their outfit. ";
+    if (options.topPrompt) promptText += `New Top: ${options.topPrompt}. `;
+    if (options.bottomPrompt) promptText += `New Bottom: ${options.bottomPrompt}. `;
   }
 
-  promptText += "Maintain the person's exact face, identity, body pose, skin tone, and background from the user image. Only change the requested garments. Photorealistic, 8k quality, natural lighting.";
+  if (options.hijab) promptText += "The person must be wearing a hijab. ";
+  promptText += "Photorealistic, 8k quality, natural lighting. Return ONLY the image.";
 
-  // 2. Add Prompt Part
-  parts.push({ text: promptText });
+  const parts = [{ text: promptText }];
+  const cleanBase64 = (dataUrl) => dataUrl.split(',')[1];
+  const getMime = (dataUrl) => dataUrl.substring(dataUrl.indexOf(':') + 1, dataUrl.indexOf(';'));
 
-  // 3. Add User Image Part
-  const getMimeType = (dataUrl) => dataUrl.substring(dataUrl.indexOf(':') + 1, dataUrl.indexOf(';'));
-  const getBase64Data = (dataUrl) => dataUrl.split(',')[1];
-
+  // Gambar User (Wajib)
   parts.push({
     inlineData: {
-      mimeType: getMimeType(userImageBase64),
-      data: getBase64Data(userImageBase64)
+      mimeType: getMime(userImageBase64),
+      data: cleanBase64(userImageBase64)
     }
   });
 
-  // 4. Add Reference Image Part (if exists)
+  // Gambar Referensi (Opsional)
   if (referenceImageBase64) {
     parts.push({
       inlineData: {
-        mimeType: getMimeType(referenceImageBase64),
-        data: getBase64Data(referenceImageBase64)
+        mimeType: getMime(referenceImageBase64),
+        data: cleanBase64(referenceImageBase64)
       }
     });
   }
 
   const payload = {
     contents: [{ parts }],
-    generationConfig: {
-      responseModalities: ["IMAGE"]
-    }
+    generationConfig: { responseModalities: ["IMAGE"] }
   };
 
   try {
@@ -153,15 +124,21 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Gagal memproses gambar (Status: ${response.status})`);
+    }
+
     const data = await response.json();
     const resultBase64 = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
     
     if (resultBase64) {
       return `data:image/png;base64,${resultBase64}`;
     }
-    throw new Error("Gagal memproses try-on.");
+    throw new Error("Gagal memproses try-on (Tidak ada gambar dikembalikan).");
   } catch (error) {
-    console.error(error);
+    console.error("Try-On Error:", error);
     throw error;
   }
 };
@@ -193,21 +170,20 @@ const ImageCard = ({ src, selected, onClick, label, isDarkMode }) => (
 
 export default function VirtualTryOnApp() {
   // Auth State
-  // Default user database
-  const [users, setUsers] = useState([
-    { username: 'genz', password: '1234', contact: 'admin@genz.ai' }
-  ]);
+  const [users, setUsers] = useState([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoginView, setIsLoginView] = useState(true); // Toggle between Login and Signup
+  const [isLoginView, setIsLoginView] = useState(true); 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [contact, setContact] = useState(""); // New state for Email/Phone
-  const [rememberMe, setRememberMe] = useState(false); // New state for Remember Me
+  const [showPassword, setShowPassword] = useState(false); 
+  const [contact, setContact] = useState(""); 
+  
+  const [rememberMe, setRememberMe] = useState(false); 
   const [loginError, setLoginError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
   // App State
-  const [isDarkMode, setIsDarkMode] = useState(true); // Changed default to true (Dark Mode)
+  const [isDarkMode, setIsDarkMode] = useState(true); 
   const [userImage, setUserImage] = useState(null);
   const [referenceImage, setReferenceImage] = useState(null); 
   const [hijab, setHijab] = useState(false);
@@ -234,7 +210,7 @@ export default function VirtualTryOnApp() {
   const fileInputRef = useRef(null);
   const fileInputRefReference = useRef(null); 
 
-  // Theme Classes Helpers
+  // Theme Classes
   const t = {
     bg: isDarkMode ? 'bg-slate-950' : 'bg-slate-50',
     text: isDarkMode ? 'text-slate-100' : 'text-slate-900',
@@ -249,10 +225,24 @@ export default function VirtualTryOnApp() {
     iconBg: isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-700'
   };
 
-  // Load saved credentials on mount
+  // --- INIT DATA ---
   useEffect(() => {
+    const storedUsers = localStorage.getItem('genz_users_db');
+    if (storedUsers) {
+      try {
+        setUsers(JSON.parse(storedUsers));
+      } catch (e) {
+        setUsers([{ username: 'genz', password: '1234', contact: 'admin@genz.ai' }]);
+      }
+    } else {
+      const defaultUsers = [{ username: 'genz', password: '1234', contact: 'admin@genz.ai' }];
+      setUsers(defaultUsers);
+      localStorage.setItem('genz_users_db', JSON.stringify(defaultUsers));
+    }
+
     const savedUser = localStorage.getItem('genz_username');
     const savedPass = localStorage.getItem('genz_password');
+    
     if (savedUser && savedPass) {
       setUsername(savedUser);
       setPassword(savedPass);
@@ -264,13 +254,13 @@ export default function VirtualTryOnApp() {
   const handleLogin = (e) => {
     e.preventDefault();
     setSuccessMsg("");
+    
     const user = users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password);
     
     if (user) {
       setIsAuthenticated(true);
       setLoginError("");
 
-      // Handle Remember Me
       if (rememberMe) {
         localStorage.setItem('genz_username', username);
         localStorage.setItem('genz_password', password);
@@ -304,35 +294,30 @@ export default function VirtualTryOnApp() {
       return;
     }
 
-    // Register User
     const newUser = { username, password, contact };
-    setUsers([...users, newUser]);
-    setIsLoginView(true); // Switch to login view
-    setSuccessMsg("Pendaftaran berhasil! Silakan login.");
-    // Don't clear inputs immediately so user can easily login
+    const updatedUsers = [...users, newUser];
+    
+    setUsers(updatedUsers);
+    localStorage.setItem('genz_users_db', JSON.stringify(updatedUsers));
+
+    // AUTO LOGIN SETELAH DAFTAR
+    setIsAuthenticated(true); 
+    if (rememberMe) {
+      localStorage.setItem('genz_username', username);
+      localStorage.setItem('genz_password', password);
+    }
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
     setUserImage(null);
     setHistory([]);
-    setContact("");
     setSuccessMsg("");
     setLoginError("");
     setIsLoginView(true);
-
-    // Check if credentials should be kept or cleared from inputs
-    const savedUser = localStorage.getItem('genz_username');
-    const savedPass = localStorage.getItem('genz_password');
-    
-    if (savedUser && savedPass) {
-      setUsername(savedUser);
-      setPassword(savedPass);
-      setRememberMe(true);
-    } else {
-      setUsername("");
-      setPassword("");
-      setRememberMe(false);
+    if (!rememberMe) {
+        setUsername("");
+        setPassword("");
     }
   };
 
@@ -376,7 +361,7 @@ export default function VirtualTryOnApp() {
     const setLoading = isTop ? setIsSearchingTop : setIsSearchingBottom;
 
     if (!query.trim()) return;
-
+    
     setLoading(true);
     try {
       const promises = [1, 2, 3].map(() => generateClothingMockup(query));
@@ -390,7 +375,7 @@ export default function VirtualTryOnApp() {
       
       setResults(validResults);
     } catch (err) {
-      setErrorMsg("Gagal mencari pakaian. Silakan coba lagi.");
+      setErrorMsg(`Pencarian Gagal: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -405,7 +390,7 @@ export default function VirtualTryOnApp() {
       setErrorMsg("Harap upload foto referensi, pilih pakaian, atau masukkan deskripsi.");
       return;
     }
-
+    
     setIsGenerating(true);
     setErrorMsg("");
 
@@ -422,7 +407,7 @@ export default function VirtualTryOnApp() {
       setCurrentResult(resultImage);
       setHistory(prev => [resultImage, ...prev]);
     } catch (err) {
-      setErrorMsg("Gagal melakukan try-on. Pastikan foto jelas.");
+      setErrorMsg(`Gagal Generate: ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
@@ -470,7 +455,6 @@ export default function VirtualTryOnApp() {
               </div>
             </div>
 
-            {/* Email/Phone Input - Only for Signup */}
             {!isLoginView && (
               <div className="animate-in fade-in slide-in-from-top-2 duration-300">
                 <label className={`block text-sm font-medium mb-1 ${t.subText}`}>Email / No. HP</label>
@@ -492,16 +476,23 @@ export default function VirtualTryOnApp() {
               <div className="relative">
                 <Key className={`absolute left-3 top-1/2 -translate-y-1/2 ${t.subText}`} size={18} />
                 <input 
-                  type="password" 
+                  type={showPassword ? "text" : "password"} 
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className={`w-full pl-10 pr-4 py-3 rounded-xl border focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-colors ${t.inputBg} ${t.inputBorder} ${t.text}`}
+                  className={`w-full pl-10 pr-10 py-3 rounded-xl border focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-colors ${t.inputBg} ${t.inputBorder} ${t.text}`}
                   placeholder="Masukkan password"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className={`absolute right-3 top-1/2 -translate-y-1/2 ${t.subText} hover:text-purple-600 transition-colors focus:outline-none`}
+                  title={showPassword ? "Sembunyikan Password" : "Tampilkan Password"}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </div>
             </div>
 
-            {/* Remember Me Checkbox - Only for Login */}
             {isLoginView && (
               <div className="flex items-center gap-2">
                 <div className="relative flex items-center">
@@ -553,6 +544,7 @@ export default function VirtualTryOnApp() {
                   setUsername("");
                   setPassword("");
                   setContact("");
+                  setShowPassword(false); 
                 }}
                 className={`text-sm font-medium hover:underline ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}
               >
@@ -560,7 +552,6 @@ export default function VirtualTryOnApp() {
               </button>
             </div>
 
-            {/* Instagram Handle Footer */}
             <div className={`text-center mt-6 pt-4 border-t ${t.dashedBorder} flex items-center justify-center gap-2 text-sm ${t.subText}`}>
               <Instagram size={16} className="text-purple-500" />
               <span className="font-medium tracking-wide opacity-80">@ge.ntaa</span>
@@ -816,8 +807,11 @@ export default function VirtualTryOnApp() {
           </button>
           
           {errorMsg && (
-            <div className={`p-3 text-sm rounded-lg border animate-in fade-in slide-in-from-top-2 ${isDarkMode ? 'bg-red-900/20 text-red-300 border-red-800' : 'bg-red-50 text-red-600 border-red-100'}`}>
-              {errorMsg}
+            <div className={`p-3 text-sm rounded-lg border animate-in fade-in slide-in-from-top-2 flex items-start gap-2 ${isDarkMode ? 'bg-red-900/20 text-red-300 border-red-800' : 'bg-red-50 text-red-600 border-red-100'}`}>
+              <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+              <div className="break-words w-full">
+                  {errorMsg}
+              </div>
             </div>
           )}
 
