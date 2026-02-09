@@ -37,7 +37,6 @@ const API_KEY = "AIzaSyDm5b64FCUwiJEzcS3w88v6ibVhbQMDMIw";
 
 // Fungsi untuk membuat gambar placeholder jika API gagal
 const getPlaceholderImage = (text, color = 'e2e8f0') => {
-  // Membuat SVG placeholder sederhana
   const svg = `
     <svg width="400" height="400" xmlns="http://www.w3.org/2000/svg">
       <rect width="100%" height="100%" fill="#${color}"/>
@@ -48,12 +47,9 @@ const getPlaceholderImage = (text, color = 'e2e8f0') => {
   return `data:image/svg+xml;base64,${btoa(svg)}`;
 };
 
-// Helper for Imagen
+// Helper for Imagen (Simple Generation)
 const generateClothingMockup = async (prompt) => {
-  if (!API_KEY) {
-    console.warn("API Key kosong, menggunakan placeholder.");
-    return getPlaceholderImage(prompt);
-  }
+  if (!API_KEY) return getPlaceholderImage(prompt);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${API_KEY}`;
   
@@ -70,51 +66,47 @@ const generateClothingMockup = async (prompt) => {
     });
     
     if (!response.ok) {
-        // Jika error (misal 404 Model Not Found), kembalikan placeholder agar aplikasi tidak macet
-        console.warn("API Error (Mockup):", response.statusText);
-        return getPlaceholderImage(prompt, 'fee2e2'); // Merah muda untuk indikasi fallback
+        // Fallback jika Imagen tidak aktif di akun
+        return getPlaceholderImage(prompt, 'fee2e2');
     }
 
     const data = await response.json();
     if (data.predictions?.[0]?.bytesBase64Encoded) {
       return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
     }
-    
     return getPlaceholderImage(prompt);
   } catch (error) {
-    console.error("Mockup Error:", error);
     return getPlaceholderImage(prompt);
   }
 };
 
-// Helper for Try-On
+// Helper for Try-On (Complex 2-Step Process)
 const generateTryOn = async (userImageBase64, referenceImageBase64, options) => {
   if (!API_KEY) throw new Error("API Key belum diisi di file App.jsx.");
 
-  // Kita gunakan Gemini 1.5 Flash untuk mencoba memproses gambar
-  // Catatan: Jika akun tidak support Imagen, ini mungkin akan gagal atau mengembalikan teks.
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+  // STEP 1: Analisis & Buat Prompt menggunakan Gemini 1.5 Flash (Text Model)
+  // Kita minta Gemini "melihat" gambar dan mendeskripsikannya menjadi prompt teks untuk Imagen.
+  const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
   
-  let promptText = "You are a fashion visualizer. ";
+  let promptInstruction = "You are a professional prompt engineer for an image generator. ";
   
   if (referenceImageBase64) {
-    promptText += "Analyze the CLOTHING image (Image 2) and the PERSON image (Image 1). ";
-    promptText += "Describe in extreme detail how the PERSON would look wearing the CLOTHING. ";
-    promptText += "Then, if you have image generation capabilities enabled, generate the resulting image. ";
-    promptText += "If you cannot generate images, describe the fit and style in text.";
+    promptInstruction += "Analyze the two images provided. Image 1 is the PERSON. Image 2 is the CLOTHING. ";
+    promptInstruction += "Create a single, highly detailed image generation prompt that describes the PERSON from Image 1 wearing the CLOTHING from Image 2. ";
+    promptInstruction += "Preserve the person's physical features (age, hair, face, body type), pose, and background exactly. ";
+    promptInstruction += "Replace their outfit with the clothing from Image 2. ";
   } else {
-    promptText += "Change the outfit of the person in the image. ";
-    if (options.topPrompt) promptText += `Wear top: ${options.topPrompt}. `;
-    if (options.bottomPrompt) promptText += `Wear bottom: ${options.bottomPrompt}. `;
+    promptInstruction += "Analyze the image of the person. Create a detailed prompt to generate this person wearing a new outfit. ";
+    if (options.topPrompt) promptInstruction += `New Top: ${options.topPrompt}. `;
+    if (options.bottomPrompt) promptInstruction += `New Bottom: ${options.bottomPrompt}. `;
   }
 
-  // Outfit Details
-  if (options.hijab) promptText += "Ensure the person wears a hijab. ";
-  if (options.extraPrompt) promptText += `Details: ${options.extraPrompt}. `;
+  if (options.hijab) promptInstruction += "The person must be wearing a hijab. ";
+  promptInstruction += "Output ONLY the prompt text, no explanations.";
 
-  const parts = [{ text: promptText }];
-
-  // Helper untuk membersihkan base64
+  // Siapkan payload untuk Gemini (Analisis Gambar)
+  const parts = [{ text: promptInstruction }];
+  
   const cleanBase64 = (dataUrl) => dataUrl.split(',')[1];
   const getMime = (dataUrl) => dataUrl.substring(dataUrl.indexOf(':') + 1, dataUrl.indexOf(';'));
 
@@ -134,40 +126,68 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
     });
   }
 
-  const payload = {
-    contents: [{ parts }],
-    // Meminta respons JSON atau Image jika memungkinkan (experimental)
-    generationConfig: { responseModalities: ["TEXT"] } 
+  // Request ke Gemini (Step 1)
+  let generatedPrompt = "";
+  try {
+    const textResponse = await fetch(textUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts }] })
+    });
+
+    if (!textResponse.ok) {
+        throw new Error("Gagal menganalisis gambar (Gemini 1.5 Flash Error).");
+    }
+    const textData = await textResponse.json();
+    generatedPrompt = textData.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!generatedPrompt) throw new Error("Gagal membuat deskripsi pakaian.");
+    
+    // Tambahkan modifier kualitas
+    generatedPrompt += ", photorealistic, 8k, highly detailed, professional photography";
+    console.log("Generated Prompt:", generatedPrompt); // Debugging
+
+  } catch (err) {
+    throw new Error(`Step 1 (Analisis) Gagal: ${err.message}`);
+  }
+
+  // STEP 2: Generate Image menggunakan Imagen 3 (Image Model)
+  const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${API_KEY}`;
+  
+  const imagePayload = {
+    instances: [{ prompt: generatedPrompt }],
+    parameters: { 
+        sampleCount: 1,
+        aspectRatio: "3:4" // Portrait ratio biasanya cocok untuk try-on
+    }
   };
 
   try {
-    const response = await fetch(url, {
+    const imageResponse = await fetch(imageUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(imagePayload)
     });
 
-    if (!response.ok) {
-       const err = await response.json().catch(()=>({}));
-       throw new Error(err.error?.message || "Gagal menghubungi Google AI.");
+    if (!imageResponse.ok) {
+       const err = await imageResponse.json().catch(()=>({}));
+       const msg = err.error?.message || imageResponse.statusText;
+       if (msg.includes("not found") || msg.includes("404")) {
+           throw new Error("Model 'Imagen 3' tidak ditemukan di akun API Key ini. Pastikan Anda memiliki akses ke Imagen di Google AI Studio.");
+       }
+       throw new Error(`Step 2 (Generasi) Gagal: ${msg}`);
     }
 
-    const data = await response.json();
-    // Cek apakah ada gambar balasan (sangat jarang untuk Flash standard)
-    // Karena keterbatasan API publik saat ini untuk image-to-image editing langsung,
-    // kita akan menangkap teks deskripsi jika gambar gagal, agar user tahu proses berjalan.
+    const imageData = await imageResponse.json();
+    const base64Img = imageData.predictions?.[0]?.bytesBase64Encoded;
     
-    const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    // Jika model hanya mengembalikan teks (karena limitasi API Key), kita throw error spesifik
-    // agar UI bisa menampilkannya, atau kita tampilkan placeholder sukses.
-    if (textResponse) {
-       throw new Error("API Key ini belum mendukung Image Generation (Imagen). Model merespons: " + textResponse.substring(0, 50) + "...");
+    if (base64Img) {
+       return `data:image/png;base64,${base64Img}`;
     }
+    throw new Error("API tidak mengembalikan data gambar.");
 
-    throw new Error("Tidak ada output gambar yang dihasilkan.");
-  } catch (error) {
-    throw error;
+  } catch (err) {
+    throw err;
   }
 };
 
@@ -458,7 +478,7 @@ export default function VirtualTryOnApp() {
       setHistory(prev => [resultImage, ...prev]);
     } catch (err) {
       // Tampilkan error tapi beri saran
-      setErrorMsg(`Gagal Try-On: ${err.message}. (Kemungkinan API Key Anda tidak memiliki akses model 'Imagen' untuk image generation)`);
+      setErrorMsg(`${err.message}`);
     } finally {
       setIsGenerating(false);
     }
