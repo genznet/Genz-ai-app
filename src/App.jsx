@@ -30,7 +30,7 @@ import {
 
 // --- API UTILITIES ---
 
-const API_KEY = ""; // System injects this
+const API_KEY = "AIzaSyC5qrQD-kXfTLkC22po9zkzIuTdiUWpues"; // System injects this
 
 // Helper for Imagen 3 (Used for "Searching"/Generating Clothing Mockups)
 const generateClothingMockup = async (prompt) => {
@@ -919,4 +919,5 @@ export default function VirtualTryOnApp() {
 
     </div>
   );
+
 }
