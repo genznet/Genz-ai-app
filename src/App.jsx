@@ -27,31 +27,18 @@ import {
   Eye,    
   EyeOff,
   AlertTriangle,
-  ImageOff,
   Sparkles
 } from 'lucide-react';
 
 // --- API UTILITIES ---
 
-// ⚠️ PENTING: MASUKKAN API KEY GOOGLE GEMINI ANDA DI SINI ⚠️
-const API_KEY = "AIzaSyDm5b64FCUwiJEzcS3w88v6ibVhbQMDMIw"; 
-
-// Fungsi untuk membuat gambar placeholder (Mode Simulasi)
-const getPlaceholderImage = (text, bgColor = 'f1f5f9', textColor = '64748b') => {
-  const svg = `
-    <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-      <rect width="100%" height="100%" fill="#${bgColor}"/>
-      <text x="50%" y="45%" font-family="sans-serif" font-weight="bold" font-size="24" fill="#${textColor}" text-anchor="middle" dy=".3em">${text}</text>
-      <text x="50%" y="55%" font-family="sans-serif" font-size="14" fill="#${textColor}" text-anchor="middle" dy=".3em" opacity="0.7">(Simulasi AI: Model Tidak Tersedia)</text>
-    </svg>
-  `;
-  return `data:image/svg+xml;base64,${btoa(svg)}`;
-};
+// ⚠️ PENTING: PASTIKAN API KEY ANDA MENDUKUNG MODEL 'IMAGEN' DI GOOGLE AI STUDIO ⚠️
+// Jika masih error "Model not found", berarti akun Google Anda belum dapat akses ke Imagen 3.
+const API_KEY = "AIzaSyDLXPHLK6lHpTpQbJswzFMbN8TQga-iqio"; 
 
 // Helper for Imagen (Search Clothing)
 const generateClothingMockup = async (prompt) => {
-  // Jika API Key kosong, langsung simulasi
-  if (!API_KEY) return getPlaceholderImage(prompt);
+  if (!API_KEY) throw new Error("API Key belum diisi di kode.");
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${API_KEY}`;
   
@@ -67,20 +54,20 @@ const generateClothingMockup = async (prompt) => {
       body: JSON.stringify(payload)
     });
     
-    // Fallback Silent: Jika error, return placeholder jangan throw error
     if (!response.ok) {
-        console.warn("Imagen API Error (Search), switching to simulation.");
-        return getPlaceholderImage(prompt, 'e2e8f0', '475569');
+        const errData = await response.json().catch(() => ({}));
+        // Tampilkan error asli dari Google
+        throw new Error(errData.error?.message || `Gagal mengambil gambar (Status: ${response.status})`);
     }
 
     const data = await response.json();
     if (data.predictions?.[0]?.bytesBase64Encoded) {
       return `data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`;
     }
-    return getPlaceholderImage(prompt);
+    throw new Error("Format respon API tidak valid.");
   } catch (error) {
     console.error("Search Error:", error);
-    return getPlaceholderImage(prompt);
+    throw error;
   }
 };
 
@@ -88,14 +75,14 @@ const generateClothingMockup = async (prompt) => {
 const generateTryOn = async (userImageBase64, referenceImageBase64, options) => {
   if (!API_KEY) throw new Error("API Key belum diisi di file App.jsx.");
 
-  // STEP 1: Gunakan Gemini 1.5 Flash untuk analisis (Lebih stabil)
+  // STEP 1: Analisis Gambar (Gemini 1.5 Flash)
+  // Kita gunakan ini untuk membuat deskripsi teks yang akurat untuk Imagen
   const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
   
-  let promptInstruction = "Describe a person wearing this outfit. ";
-  if (options.topPrompt) promptInstruction += `Top: ${options.topPrompt}. `;
-  if (options.bottomPrompt) promptInstruction += `Bottom: ${options.bottomPrompt}. `;
-  
-  // Payload Gemini
+  let promptInstruction = "Describe the person in Image 1 wearing the outfit from Image 2 (or the described outfit). ";
+  promptInstruction += "Focus on the visual look for an image generator. ";
+  promptInstruction += "Output ONLY the prompt description, no other text.";
+
   const parts = [{ text: promptInstruction }];
   const cleanBase64 = (dataUrl) => dataUrl.split(',')[1];
   const getMime = (dataUrl) => dataUrl.substring(dataUrl.indexOf(':') + 1, dataUrl.indexOf(';'));
@@ -107,9 +94,17 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
     }
   });
 
-  // Kami mencoba melakukan analisis. Jika gagal, kita skip ke simulasi hasil.
-  let generatedPrompt = "Person in new outfit"; 
-  
+  if (referenceImageBase64) {
+    parts.push({
+      inlineData: {
+        mimeType: getMime(referenceImageBase64),
+        data: cleanBase64(referenceImageBase64)
+      }
+    });
+  }
+
+  // Generate Prompt
+  let generatedPrompt = "";
   try {
     const textResponse = await fetch(textUrl, {
       method: 'POST',
@@ -119,14 +114,19 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
 
     if (textResponse.ok) {
         const textData = await textResponse.json();
-        const resText = textData.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (resText) generatedPrompt = resText.substring(0, 500);
+        generatedPrompt = textData.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
   } catch (err) {
-    console.warn("Analysis skipped due to error, proceeding to generation step.");
+    console.warn("Step 1 (Analisis) gagal, menggunakan prompt default.");
   }
 
-  // STEP 2: Generate Image (Imagen)
+  // Fallback prompt jika analisis gagal
+  if (!generatedPrompt) {
+      generatedPrompt = `A person wearing ${options.topPrompt || 'a new outfit'} and ${options.bottomPrompt || 'matching pants'}, photorealistic, 8k.`;
+  }
+
+  // STEP 2: Generate Image (Imagen 3)
+  // Ini adalah inti dari Try-On. Jika API Key tidak support Imagen, ini akan error.
   const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${API_KEY}`;
   
   const imagePayload = {
@@ -142,14 +142,9 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
     });
 
     if (!imageResponse.ok) {
-       // FALLBACK UTAMA: Jika Imagen gagal (karena limitasi akun), 
-       // kembalikan gambar placeholder yang terlihat "sukses" agar flow tidak putus.
-       console.warn("Imagen Generation Failed, using simulation result.");
-       
-       // Kita kembalikan gambar referensi (jika ada) atau user image asli dengan filter
-       // sebagai simulasi "hasil"
-       if (referenceImageBase64) return referenceImageBase64; 
-       return getPlaceholderImage("Hasil Try-On (Simulasi)", "dcfce7", "166534"); // Warna hijau sukses
+       const err = await imageResponse.json().catch(()=>({}));
+       const msg = err.error?.message || imageResponse.statusText;
+       throw new Error(`Google Imagen Error: ${msg}`);
     }
 
     const imageData = await imageResponse.json();
@@ -159,12 +154,10 @@ const generateTryOn = async (userImageBase64, referenceImageBase64, options) => 
        return `data:image/png;base64,${base64Img}`;
     }
     
-    return getPlaceholderImage("Hasil Try-On (Simulasi)", "dcfce7", "166534");
+    throw new Error("API berhasil tapi tidak mengembalikan data gambar.");
 
   } catch (err) {
-    // Catch-all error handler untuk memastikan tidak ada crash merah
-    console.error("Try-On Process Error:", err);
-    return getPlaceholderImage("Hasil Try-On (Simulasi)", "dcfce7", "166534");
+    throw err;
   }
 };
 
@@ -250,9 +243,8 @@ export default function VirtualTryOnApp() {
     iconBg: isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-700'
   };
 
-  // --- INIT DATA & AUTH PERSISTENCE ---
+  // --- INIT DATA ---
   useEffect(() => {
-    // Load Users dari LocalStorage (Agar tidak hilang saat refresh)
     const storedUsers = localStorage.getItem('genz_users_db');
     if (storedUsers) {
       try {
@@ -266,7 +258,6 @@ export default function VirtualTryOnApp() {
       localStorage.setItem('genz_users_db', JSON.stringify(defaultUsers));
     }
 
-    // Load Remember Me Credentials
     const savedUser = localStorage.getItem('genz_username');
     const savedPass = localStorage.getItem('genz_password');
     
@@ -327,34 +318,25 @@ export default function VirtualTryOnApp() {
     setUsers(updatedUsers);
     localStorage.setItem('genz_users_db', JSON.stringify(updatedUsers));
 
-    setIsLoginView(true);
-    setSuccessMsg("Pendaftaran berhasil! Silakan login.");
-    
-    setUsername("");
-    setPassword("");
-    setContact("");
+    // AUTO LOGIN SETELAH DAFTAR (FIX)
+    setIsAuthenticated(true); 
+    if (rememberMe) {
+      localStorage.setItem('genz_username', username);
+      localStorage.setItem('genz_password', password);
+    }
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
     setUserImage(null);
     setHistory([]);
-    setContact("");
     setSuccessMsg("");
     setLoginError("");
     setIsLoginView(true);
-
-    const savedUser = localStorage.getItem('genz_username');
-    const savedPass = localStorage.getItem('genz_password');
-    
-    if (savedUser && savedPass) {
-      setUsername(savedUser);
-      setPassword(savedPass);
-      setRememberMe(true);
-    } else {
-      setUsername("");
-      setPassword("");
-      setRememberMe(false);
+    // Keep username in input if remember me is on
+    if (!rememberMe) {
+        setUsername("");
+        setPassword("");
     }
   };
 
@@ -399,11 +381,6 @@ export default function VirtualTryOnApp() {
 
     if (!query.trim()) return;
     
-    if (!API_KEY) {
-       // Jangan error, cuma kasih warning di console
-       console.log("Mode offline/preview");
-    }
-
     setLoading(true);
     try {
       const promises = [1, 2, 3].map(() => generateClothingMockup(query));
@@ -417,7 +394,7 @@ export default function VirtualTryOnApp() {
       
       setResults(validResults);
     } catch (err) {
-      console.log("Search fallback");
+      setErrorMsg(`Pencarian Gagal: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -433,11 +410,6 @@ export default function VirtualTryOnApp() {
       return;
     }
     
-    if (!API_KEY) {
-        setErrorMsg("API Key belum diisi di kode. Silakan edit file App.jsx baris 35.");
-        return;
-    }
-
     setIsGenerating(true);
     setErrorMsg("");
 
@@ -454,7 +426,7 @@ export default function VirtualTryOnApp() {
       setCurrentResult(resultImage);
       setHistory(prev => [resultImage, ...prev]);
     } catch (err) {
-      setErrorMsg(`Gagal Try-On: ${err.message}`);
+      setErrorMsg(`Gagal Generate: ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
