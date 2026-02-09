@@ -34,7 +34,7 @@ import {
 
 // ⚠️ PENTING: PASTIKAN API KEY ANDA MENDUKUNG MODEL 'IMAGEN' DI GOOGLE AI STUDIO ⚠️
 // Jika masih error "Model not found", berarti akun Google Anda belum dapat akses ke Imagen 3.
-const API_KEY = "AIzaSyDLXPHLK6lHpTpQbJswzFMbN8TQga-iqio"; 
+const API_KEY = "AIzaSyDm5b64FCUwiJEzcS3w88v6ibVhbQMDMIw"; 
 
 // Helper for Imagen (Search Clothing)
 const generateClothingMockup = async (prompt) => {
@@ -933,3 +933,4 @@ export default function VirtualTryOnApp() {
     </div>
   );
 }
+
